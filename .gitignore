@@ -1,7 +1,7 @@
 build*/
 buildroot*/
-buildroot/
-ccache/*
+buildroot
+ccache
 download/*
 grubd
 output

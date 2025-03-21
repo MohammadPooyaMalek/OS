@@ -20,6 +20,9 @@ This repository contains the source code for a custom operating system. The proj
 To build the project:
 
 ```bash
+# Install Dependancies
+./bin/system-setup
+# Create Cloud Image
 ./bin/build-release daily
 ```
 

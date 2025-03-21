@@ -1,0 +1,67 @@
+name: Pooya Cloud image builder
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "[01].[0-9]+.[0-9]+"
+  pull_request:
+    branches:
+      - main
+jobs:
+  pooya-build-matrix:
+    strategy:
+      matrix:
+        arch: [x86_64]
+        # aarch64, arm, ppc64le
+    runs-on: ubuntu-24.04
+
+    env:
+      ARCHES: ${{ matrix.arch }}
+      QUIET: 1
+      CI_BUILD: "true"
+      CI_BUILD_OUT: "build-ci/"
+
+    steps:
+      - name: Pull pooya source artifacts
+        uses: actions/checkout@v4
+
+      - name: Cache download
+        uses: actions/cache@v4
+        with:
+          key: downloads-${{ matrix.arch }}-${{ hashFiles('bin/build-release') }}
+          path: download/
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          key: ccache-${{ matrix.arch }}-${{ hashFiles('bin/build-release') }}
+          path: ccache/
+
+      - name: Prepare job environment
+        run: bin/system-setup
+
+      - name: Install job dependencies
+        run: sudo apt-get install cloud-utils qemu-system openbios-ppc
+
+      - name: disable invisible-mirror.net use
+        run: echo "127.0.0.1 invisible-mirror.net" | sudo tee -a /etc/hosts
+
+      - name: Build Pooya image
+        env:
+          # use tag name for tag build, or 'daily' for anything else.
+          reason: "${{ github.ref_type == 'tag' && github.ref_name || 'daily' }}"
+        run: bin/build-release "$reason"
+
+      - name: Boot Pooya image
+        run: bin/test-boot
+        env:
+          GUESTARCH: ${{ matrix.arch }}
+          POWEROFF: "true"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pooya-${{ matrix.arch }}
+          path: build-ci/release/

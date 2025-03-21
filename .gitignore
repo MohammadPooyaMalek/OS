@@ -1,5 +1,6 @@
-build*
-buildroot*
+build*/
+buildroot*/
+buildroot/
 ccache/*
 download/*
 grubd

@@ -1,0 +1,109 @@
+#!/bin/bash
+
+GRUB_MKIMAGE=${GRUB_MKIMAGE:-}
+
+source "${0%/*}/common-functions.sh"
+
+burl="https://launchpad.net/ubuntu/+archive/primary/+files/"
+outdir="./download"
+def_arches="x86_64 aarch64 arm"
+
+case "$1" in
+    --outdir=*) outdir="${1#*=}"; shift;;
+    --outdir) outdir="$2"; shift 2;;
+esac
+gver="$1"
+shift
+
+if [ $# -eq 0 ]; then
+   set -- ${def_arches}
+fi
+
+[ -d "$outdir" ] || mkdir -p "$outdir" ||
+   fail "failed mkdir $outdir"
+
+[ -n "$gver" ] || fail "must give grub version"
+
+deb2tar() {
+
+    local deb="$1" tar="$2" efiarch=$3 format=$4
+
+    if [ -z "$GRUB_MKIMAGE" ]; then
+        # grub-mkimage is grub2-mkimage on fedora/centos.
+        for n in grub-mkimage grub2-mkimage; do
+            command -v $n >/dev/null 2>&1 && GRUB_MKIMAGE=$n && break
+        done
+        [ -n "$GRUB_MKIMAGE" ] ||
+            fail "No grub-mkimage found. cannnot build efi for $efiarch/$format"
+    fi
+
+    t=$(dirname "$deb")
+    tdir=$(mktemp -d "$t/.XXXXXX") || return
+
+    debug 1 "creating $out in tempdir at $tdir"
+
+    mkdir -p "$tdir/deb"
+    ar x "$deb" --output "$tdir/deb" || fail "failed to unpack $deb"
+    ( cd "$tdir/deb" && tar -xf data.tar.* ) || fail "failed to extract data from $deb"
+
+    efibin=boot${efiarch}.efi
+
+    "${0%/*}/build-efi-images" $GRUB_MKIMAGE "${tdir}/deb/usr/lib/grub/$format" \
+        "${tdir}/out/" $format $efiarch
+
+    mv "${tdir}/out/grub${efiarch}.efi" "${tdir}/boot${efiarch}.efi"
+    rm -rf "$tdir/{deb,out}"
+    debug 2 "creating grub.tar.gz"
+    tar -C "$tdir/" -czf "$tdir/grub.tar.gz" $efibin &&
+        mv "$tdir/grub.tar.gz" "$tar" || {
+            error "failed creating tarball";
+            rm -Rf "$tdir"
+            return 1;
+        }
+    rm -Rf "$tdir"
+    return 0
+    
+}
+
+for arch in "$@"; do
+    efiarch=""
+    case "$arch" in
+        aarch64)
+            efiarch='aa64'
+            debarch='arm64'
+            pkgarch='arm64'
+            format='arm64-efi'
+            ;;
+        x86_64)
+            efiarch='x64'
+            debarch='amd64'
+            pkgarch='amd64'
+            format='x86_64-efi'
+            ;;
+        arm)
+            efiarch='arm'
+            debarch='armhf'
+            pkgarch='arm'
+            format='arm-efi'
+            ;;
+        *) debug 1 "no EFI grub for $arch";;
+    esac
+
+    if [ -z "$efiarch" ]; then
+        error "arch '$arch' does not have a known EFI grub. skipping."
+        continue
+    fi
+
+    deb="grub-efi-${pkgarch}-bin_${gver}_${debarch}.deb"
+    if [ ! -f "${outdir}/${deb}" ]; then
+            dl $burl/$deb "$outdir/$deb" || fail "failed dl $burl/$deb"
+    fi
+    tar="grub-efi-${gver}-${arch}.tar.gz"
+    deb2tar "$outdir/$deb" "$outdir/$tar" $efiarch $format || 
+        fail "failed deb2efi from $deb to $tar"
+    
+    error "wrote $outdir/${tar}"
+    ln -sf "${tar}" "$outdir/grub-efi-${arch}.tar.gz" ||
+        fail "failed symlink for $outdir/grub-$arch.rpm"
+done
+# vi: ts=4 expandtab

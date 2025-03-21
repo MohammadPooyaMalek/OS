@@ -1,0 +1,52 @@
+#!/bin/sh
+#
+# Start the OpenSSH SSH server
+#
+
+SSHD=/usr/sbin/sshd
+SSHD_CONF=/etc/ssh/sshd_config
+
+# Generate host keys if they don't exist
+if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
+    echo "Generating SSH host keys..."
+    mkdir -p /etc/ssh
+    ssh-keygen -t rsa -f /etc/ssh/ssh_host_rsa_key -N ""
+    ssh-keygen -t ecdsa -f /etc/ssh/ssh_host_ecdsa_key -N ""
+    ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N ""
+    
+    # Show the keys for debugging
+    echo "=== sshd host keys ==="
+    for key in /etc/ssh/ssh_host_*_key.pub; do
+        cat $key
+    done
+fi
+
+# Ensure proper permissions for SSH directories
+mkdir -p /home/pooya/.ssh
+chmod 0700 /home/pooya/.ssh
+touch /home/pooya/.ssh/authorized_keys
+chmod 0600 /home/pooya/.ssh/authorized_keys
+chown -R pooya:pooya /home/pooya/.ssh
+
+
+case "$1" in
+  start)
+    echo "Starting OpenSSH sshd: "
+    start-stop-daemon -S -x "$SSHD" -- -f "$SSHD_CONF"
+    echo "OK"
+    ;;
+  stop)
+    echo "Stopping OpenSSH sshd: "
+    start-stop-daemon -K -x "$SSHD"
+    echo "OK"
+    ;;
+  restart|reload)
+    $0 stop
+    $0 start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+esac
+
+exit $?

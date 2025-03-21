@@ -1,0 +1,5 @@
+This directory contains patches to be applied to buildroot.
+They're in quilt(1) style format.
+
+bin/bundle' will apply the patches to buildroot source if
+there is a patches-buildroot/series file.

@@ -1,0 +1,2 @@
+# pooya user needs passwordless sudo
+pooya ALL=(ALL) NOPASSWD:ALL

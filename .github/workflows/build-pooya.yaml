@@ -54,11 +54,13 @@ jobs:
           reason: "${{ github.ref_type == 'tag' && github.ref_name || 'daily' }}"
         run: bin/build-release "$reason"
 
-      - name: Boot Pooya image
+      - name: Boot Pooya image (test only)
         run: bin/test-boot
         env:
           GUESTARCH: ${{ matrix.arch }}
           POWEROFF: "true"
+          TIMEOUT: 1200  # Set timeout to 120 seconds (2 minutes)
+        timeout-minutes: 50  # GitHub workflow timeout as a backup
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

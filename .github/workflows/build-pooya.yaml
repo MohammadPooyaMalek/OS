@@ -59,11 +59,32 @@ jobs:
         env:
           GUESTARCH: ${{ matrix.arch }}
           POWEROFF: "true"
-          TIMEOUT: 1200  # Set timeout to 120 seconds (2 minutes)
+          TIMEOUT: 1200  # Set timeout to 1200 seconds (20 minutes)
         timeout-minutes: 50  # GitHub workflow timeout as a backup
 
-      - name: Upload build artifacts
+      - name: Find IMG file
+        id: find-img
+        run: |
+          IMG_FILE=$(find build-ci/release/ -name "*.img" | head -n 1)
+          echo "Found image file: $IMG_FILE"
+          echo "img_file=$IMG_FILE" >> $GITHUB_OUTPUT
+          echo "img_name=$(basename $IMG_FILE)" >> $GITHUB_OUTPUT
+
+      - name: Upload IMG file as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pooya-${{ matrix.arch }}
-          path: build-ci/release/
+          name: PooyaOS-${{ matrix.arch }}-image
+          path: ${{ steps.find-img.outputs.img_file }}
+          retention-days: 120
+
+      # Only upload to releases if this is a tag push
+      - name: Create Release
+        id: create_release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ steps.find-img.outputs.img_file }}
+          name: Pooya Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -59,7 +59,7 @@ jobs:
         env:
           GUESTARCH: ${{ matrix.arch }}
           POWEROFF: "true"
-          TIMEOUT: 1200  # Set timeout to 1200 seconds (20 minutes)
+          TIMEOUT: 12000  # Set timeout to 12000 seconds (200 minutes)
         timeout-minutes: 50  # GitHub workflow timeout as a backup
 
       - name: Find IMG file
@@ -69,17 +69,18 @@ jobs:
           echo "Found image file: $IMG_FILE"
           echo "img_file=$IMG_FILE" >> $GITHUB_OUTPUT
           echo "img_name=$(basename $IMG_FILE)" >> $GITHUB_OUTPUT
-
-      - name: Upload IMG file as artifact
+          
+      # Keep minimal artifact upload for compatibility with GitHub Actions
+      - name: Upload IMG file as minimal artifact
         uses: actions/upload-artifact@v4
         with:
           name: PooyaOS-${{ matrix.arch }}-image
           path: ${{ steps.find-img.outputs.img_file }}
           retention-days: 120
 
-      # Only upload to releases if this is a tag push
-      - name: Create Release
-        id: create_release
+      # For tag releases, use regular GitHub release
+      - name: Create Release for Tags
+        id: create_tag_release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
@@ -88,3 +89,50 @@ jobs:
           draft: false
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
+          
+      # For non-tag builds, create a special GitHub release
+      - name: Create Build Release
+        id: create_build_release 
+        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+        uses: "marvinpinto/action-automatic-releases@latest"
+        with:
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          automatic_release_tag: "latest-build"
+          prerelease: true
+          title: "Latest Development Build"
+          files: ${{ steps.find-img.outputs.img_file }}
+      
+      # Update README with download link
+      - name: Update README with download link
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          REPO_OWNER=$(echo $GITHUB_REPOSITORY | cut -d '/' -f1)
+          REPO_NAME=$(echo $GITHUB_REPOSITORY | cut -d '/' -f2)
+          IMG_NAME=$(basename ${{ steps.find-img.outputs.img_file }})
+          
+          # Create download URLs
+          LATEST_URL="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/latest-build/$IMG_NAME"
+          
+          # Update the README
+          if [ -f "README.md" ]; then
+            # Look for a download section and update it, or add one if it doesn't exist
+            if grep -q "## Download" README.md; then
+              # If a download section exists, update it
+              sed -i '/## Download/,/##/{/## Download/!{/##/!d}}' README.md
+              sed -i '/## Download/a \
+              \
+              Latest build: [Download Pooya OS Image]('$LATEST_URL')\
+              \
+              You can also find all releases on the [Releases page](https://github.com/'$REPO_OWNER'/'$REPO_NAME'/releases).' README.md
+            else
+              # If no download section exists, add one at the end
+              echo -e "\n## Download\n\nLatest build: [Download Pooya OS Image]($LATEST_URL)\n\nYou can also find all releases on the [Releases page](https://github.com/$REPO_OWNER/$REPO_NAME/releases)." >> README.md
+            fi
+            
+            # Commit and push the changes
+            git config --global user.name "GitHub Actions"
+            git config --global user.email "actions@github.com"
+            git add README.md
+            git commit -m "Update download link in README [skip ci]"
+            git push origin main
+          fi

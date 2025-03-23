@@ -36,6 +36,13 @@ After building, you can run the OS in a virtual environment using QEMU:
 qemu-system-x86_64 -kernel build/kernel.bin
 ```
 
+## Download
+### Direct Link to Latest Build
+[Download Latest Pooya OS Image](https://github.com/USERNAME/REPO/releases/download/latest-build/pooya-daily-x86_64-disk.img)
+
+### Dynamic Badge
+[![Download Pooya OS](https://img.shields.io/github/v/release/MohammadPooyaMalek/OS?include_prereleases&label=Download%20Latest%20Build&style=for-the-badge)](https://github.com/MohammadPooyaMalek/OS/releases/latest)
+
 ## Project Structure
 
 ```

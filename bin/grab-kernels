@@ -1,0 +1,122 @@
+#!/bin/bash
+
+source "${0%/*}/common-functions.sh"
+
+burl="https://launchpad.net/ubuntu/+archive/primary/+files/"
+outdir="./download"
+def_arches="x86_64 arm ppc64le aarch64"
+
+case "$1" in
+    --outdir=*) outdir="${1#*=}"; shift;;
+    --outdir) outdir="$2"; shift 2;;
+esac
+
+debs2tar() {
+    local out="$1" t="" deb=""
+    shift
+    t=$(dirname "$out")
+    tdir=$(mktemp -d "$t/.${0##*/}.XXXXXX") || return
+    debug 1 "creating $out in tempdir at $tdir from $*"
+    mkdir "$tdir/ex"
+    for deb in "$@"; do
+        debug 2 "extracting $deb"
+        ar x "$deb" --output "$tdir/ex" || error "failed dpkg -x $deb"
+        ls -lR $tdir/ex
+        ( cd "$tdir/ex" && tar -xf data.tar* ) || fail "failed to extract data from $deb"
+        ( cd "$tdir/ex" && rm data.tar* control.tar*)
+    done
+    debug 2 "creating kernel.tar.gz"
+    tar -C "$tdir/ex" -czf "$tdir/kernel.tar.gz" . &&
+        mv "$tdir/kernel.tar.gz" "$out" || {
+            error "failed creating tarball from $*";
+            rm -Rf "$tdir"
+            return 1;
+        }
+    rm -Rf "$tdir";
+    return 0
+}
+
+kver="$1"
+shift
+
+if [ $# -eq 0 ]; then
+   set -- ${def_arches}
+fi
+
+[ -d "$outdir" ] || mkdir -p "$outdir" ||
+   fail "failed mkdir $outdir"
+
+
+[ -n "$kver" ] || fail "must give kernel version"
+
+# version like 3.13.0-52.86
+#              3.19.0-20.20~14.04.1
+
+fmt_4_15() {
+    # this format, with
+    #   images linux-image and linux-image-unsigned)
+    #   modules linux-modules and linux-modules-extra
+    # was in place for 4.15.
+    local xarch="$1"
+    image="linux-image"
+    extras="linux-modules linux-modules-extra"
+    case "$xarch" in
+        # no big endian kernel or 4.15
+        amd64|ppc64el) image="linux-image-unsigned";;
+        arm64) :;;
+        armhf) extras="linux-modules";;
+    esac
+}
+
+kpart=${kver%-*}
+upart=${kver#*-}
+abi=${upart%%.*}
+kmajor=${kpart%%.*}
+kminor=${kpart#*.}; kminor=${kminor%.*}
+kmicro=${kpart#*.*.}
+
+case "$kmajor.$kminor" in
+   5.15) echo "Using $kmajor.$kminor kernel from Ubuntu 22.04 release.";;
+   *) error "WARN: possibly unknown kernel version $kmajor.$kminor.";;
+esac
+
+for arch in "$@"; do
+    xarch=$arch;
+    [ "$arch" = "x86_64" ] && xarch="amd64";
+    case "$arch" in
+        arm) xarch="armhf"; flav="generic";;
+        aarch64) xarch=arm64; flav="generic";;
+        ppc64le) xarch="ppc64el"; flav="generic";;
+        x86_64|arm64) flav="generic";;
+        *) fail "unknown kernel:arch for $kver:$arch"
+    esac
+    image=""
+    extras=""
+    ffunc="fmt_4_15"
+    $ffunc "$xarch"
+    [ -z "$image" -a -z "$extras" ] && {
+            echo "WARN: no image/extras for $xarch and $kmajor.$kminor"
+            continue
+    }
+    debs=""
+    for epkg in $image $extras; do
+        debname="${epkg}-${kmajor}.${kminor}.${kmicro}-${abi}-${flav}_${kver}_${xarch}.deb"
+        url="$burl$debname"
+        dl "$url" "$outdir/$debname" || fail "failed dl $url"
+        ln -sf "$debname" "$outdir/kernel-${arch}-${epkg}.deb" ||
+            fail "failed symlink for $outdir/kernel-$arch-${epkg}.deb"
+        debs="${debs} ${outdir}/$debname"
+    done
+    tar="linux-image-${kver}-${flav}-${xarch}.tar.gz"
+    if [ -f "$outdir/${tar}" ]; then
+        error "re-used existing $outdir/${tar}"
+    else
+        debs2tar "$outdir/${tar}" ${debs} ||
+            fail "failed debs2tar to $tar on $debs"
+        error "wrote $outdir/${tar}"
+    fi
+    ln -sf "${tar}" "$outdir/kernel-${arch}.tar.gz" ||
+        fail "failed symlink for $outdir/kernel-$arch.tar.gz"
+done
+
+# vi: tabstop=4 expandtab

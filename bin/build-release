@@ -1,0 +1,311 @@
+#!/bin/bash
+
+[ $# -ge 1 ] || { echo "must give version"; exit 1; }
+
+source "${0%/*}/common-functions.sh"
+
+VER=$1
+daily=false
+if [ "$1" = "daily" ]; then
+    VER="d$(date +%y%m%d)"
+    daily=true
+fi
+shift
+pre=pooya-$VER
+BR_VER="${BR_VER:-2025.02}" # WARNING: this may be non-trivial to change
+ARCHES="${ARCHES:-x86_64}"
+KVER="${KVER:-6.11.0-19.19}" # Ubuntu 24.04
+GVER="${GVER:-2.12-1ubuntu7.1}" # Ubuntu 24.04 grub2
+GVER_UNSIGNED="${GVER_UNSIGNED:-2.06-2ubuntu14.1}" # Ubuntu 24.04 grub2-unsigned
+ME=$(readlink -f "$0")
+MY_D=${ME%/*}
+PATH=${MY_D}:$PATH
+QUIET=${QUIET:-}
+BOOTTEST=${BOOTTEST:-false}
+CI_BUILD=${CI_BUILD:-false}
+CI_BUILD_OUT=${CI_BUILD_OUT:-}
+
+case "$BOOTTEST" in
+    true|false) :;;
+    *) echo "Unknown value for BOOTTEST: ${BOOTTEST}"; exit 1;;
+esac
+
+case "$CI_BUILD" in
+    true|false) :;;
+    *) echo "Unknown value for CI_BUILD: ${CI_BUILD}"; exit 1;;
+esac
+
+MAKE_QUIET=
+if [ ! -z $QUIET ]; then
+    MAKE_QUIET="-s"
+fi
+
+set -e
+set -o pipefail
+
+if [ "$CI_BUILD" = "true" ]; then
+    OUT="$PWD/$CI_BUILD_OUT"
+else
+    OUT="$PWD/../build-$VER"
+fi
+LOGFILE="$OUT/date.txt"
+export TMPDIR="$OUT/tmp"
+mkdir -p "$OUT" "$TMPDIR"
+
+msg() {
+    echo "$@" >> "$LOGFILE"
+    echo "$@"
+}
+logevent() {
+    # logevent(msg, [from])
+    # log the message in $1 and time since $2, defaulting to last call.
+    local up delta msg="$1" ref="$2" human=""
+    up=${SECONDS}
+    if [ "$ref" = "-" ]; then
+        ref=""
+    elif [ "$ref" = "" ]; then
+        ref="${_LAST_UP}"
+    fi
+    if [ -n "$ref" ]; then
+        delta="$(($up-$ref))"
+        sec2human "$delta" tshort && human=${_RET}
+    fi
+    msg "$(date -R)" "$msg" "${delta:+Took ${human}. [${delta}s]}"
+    _LAST_UP=$up
+    _RET=${_LAST_UP}
+}
+
+build_arch() {
+    local arch="" quiet=false cmd="" log=""
+    if [ "$1" = "quiet" ]; then
+        quiet=true
+        shift
+    fi
+    arch="$1"
+    log="${OUT}/build-$arch.log"
+    cmd=( make $MAKE_QUIET ARCH=$arch "OUT_D=$OUT/build/$arch"
+          ${CCACHE_D:+"BR2_CCACHE_DIR=${CCACHE_D}/$arch"} )
+
+    logevent "start $arch" -
+    if $quiet; then
+        error "building $arch into $log"
+        time "${cmd[@]}" > "$log" 2>&1
+    else
+        time "${cmd[@]}" 2>&1 | tee "$log"
+    fi
+    ret=$?
+    logevent "end $arch [ret=$ret]"
+    return $ret
+}
+
+get_grub_format() {
+    local arch=$1
+    case "$arch" in
+        ppc*) format=ieee;;
+        *) format=efi;;
+    esac
+    echo $format
+}
+
+get_grub_version() {
+    local arch=$1 ver=""
+    case "$arch" in
+        x86_64|aarch64) ver="${GVER_UNSIGNED}";;
+        *) ver="$GVER";;
+    esac
+    echo "$ver"
+}
+
+get_img_size() {
+    local arch=$1
+    case "$arch" in
+        *) size="";;
+    esac
+    echo $size
+}
+
+if [ "$1" = "build_arch" ]; then
+    shift
+    build_arch "$@"
+    exit
+elif [ $# -gt 1 ]; then
+    fail "confused by $# arguments: $*"
+fi
+
+# really just here to check that VER is a tag
+# or source code checkout would fail
+tagname=${VER//"~"/_}
+if ! $daily; then
+    git tag -l | grep -q "^$tagname$" ||
+        fail "$VER ($tagname): not a tag in $PWD."
+fi
+
+mainargs="[$VER] $*"
+logevent "start $mainargs" -
+tstart=${_RET}
+
+# Stage 1: DOWNLOAD
+logevent "start download" -
+brtgz="buildroot-${BR_VER}.tar.gz"
+dl "https://buildroot.org/downloads/$brtgz" "download/$brtgz"
+logevent "end download"
+
+logevent "start unpack" -
+rm -Rf "buildroot-${BR_VER}"
+rm -f buildroot
+tar -xf download/buildroot-${BR_VER}.tar.gz
+ln -snf buildroot-${BR_VER} buildroot
+
+# we do not do this here, so that we're not dependent on the
+# cvs working (which wont work through http_proxy) and also
+# to have revision controlled information in that file.
+#./bin/mkcabundle > src/etc/ssl/certs/ca-certificates.crt
+
+if [ -f patches-buildroot/series ]; then
+    ( cd buildroot && QUILT_PATCHES="$PWD/../patches-buildroot" quilt push -a )
+fi
+
+cat << EOF > "src/etc/os-release"
+PRETTY_NAME="Pooya $VER"
+NAME="Pooya"
+VERSION_ID="$VER"
+ID=pooya
+EOF
+logevent "end unpack"
+
+logevent "start br-source" -
+make $MAKE_QUIET ARCH=${ARCHES%% *} "OUT_D=$OUT/build/$arch" br-source
+logevent "end br-source"
+
+logevent "start kernel and grub downloads" -
+kstart=${_RET}
+for arch in ${ARCHES}; do
+    format=$(get_grub_format "$arch")
+    mkdir -p "$OUT/stage/$arch"
+
+    kver=$KVER
+    gver=$(get_grub_version "$arch")
+
+    # grab kernel
+    logevent "start kernel ($arch) download" -
+    grab-kernels "$kver" $arch
+    logevent "end kernel ($arch) download"
+
+    # grab grub
+    logevent "start grub $arch-$format download" -
+    grab-grub-${format} "$gver" $arch
+    logevent "end grub $arch-$format download"
+done
+logevent "end kernel and grub downloads" "$kstart"
+
+# STAGE 2: BUILD
+jobs_flag=""
+parallel=true
+case "${POOYA_PARALLEL:-none}" in
+    none) parallel=false;;
+    0|true) :;;
+    [0-9]|[0-9][0-9]) jobs_flag="--jobs=${POOYA_PARALLEL}";;
+    auto) command -v parallel >/dev/null || parallel=false;;
+    *) fail "unknown value for POOYA_PARALLEL=$POOYA_PARALLEL";;
+esac
+
+if $parallel; then
+    parallel --ungroup ${jobs_flag} \
+        "$0" "$VER" build_arch quiet {} ::: ${ARCHES}
+else
+    for arch in ${ARCHES}; do
+        build_arch "$arch"
+    done;
+fi
+
+# STAGE 3: BUNDLE
+for arch in ${ARCHES}; do
+    # bundle rootfs, kernel & grub
+    format=$(get_grub_format "$arch")
+    size=$(get_img_size "$arch")
+    logevent "start bundling $arch" -
+    sudo ./bin/bundle -v ${size:+--size=$size} --arch="$arch" \
+        "$OUT/build/$arch/rootfs.tar" \
+        ./download/kernel-$arch.tar.gz ./download/grub-${format}-$arch.tar.gz \
+        "$OUT/stage/$arch";
+    logevent "end bundling $arch"
+done
+
+sudo chown -R $USER:$USER "$OUT/stage"
+
+logevent "start generating lxd.tar.xz for ${ARCHES}" -
+for arch in ${ARCHES}; do
+    ./bin/generate-lxd-meta "$OUT/stage/$arch/lxd.tar.xz" "$arch" "$VER"
+done
+logevent "end generating lxd.tar.xz for ${ARCHES}"
+
+mkdir -p "$OUT/release"
+
+if ! $daily; then
+   ( srcd="$PWD" && tmpd=$(mktemp -d) && cd "$tmpd" &&
+        trap "rm -Rf '$tmpd'" EXIT &&
+        git clone "$srcd" "pooya-$VER" &&
+        cd "pooya-$VER" && git checkout "$tagname" &&
+        cd .. &&
+        rm -Rf "pooya-$VER/.git/" &&
+        tar cvzf - pooya-$VER ) > "$OUT/release/pooya-$VER-source.tar.gz"
+fi
+
+rm -f "$OUT/stage"/*/"$pre"*
+for arch in ${ARCHES}; do
+    p=$pre-$arch
+    ( cd "$OUT/stage/$arch" &&
+        ln kernel $p-vmlinuz && ln kernel $p-kernel &&
+        ln initramfs $p-initrd && ln initramfs $p-initramfs &&
+        ln part.img $p-rootfs.img &&
+        ln blank.img $p-blank.img &&
+        ln disk.img $p-disk.img &&
+        ln filesys.tar.gz $p-lxc.tar.gz &&
+        ln filesys.tar.xz $p-lxc.tar.xz &&
+        ln lxd.tar.xz $p-lxd.tar.xz &&
+        true
+    );
+done
+
+logevent "start populating release" -
+for arch in ${ARCHES}; do
+    p=$pre-$arch
+    ( cd "$OUT/stage/$arch" &&
+        cp $p-kernel $p-initramfs $p-lxc.tar.gz $p-lxc.tar.xz \
+            $p-lxd.tar.xz "$OUT/release/" &&
+        gzip -9 -c $p-rootfs.img > $OUT/release/$p-rootfs.img.gz ) &&
+        ( cd "$OUT/stage/$arch" &&
+            tar cvzf - $p-blank.img $p-vmlinuz $p-initrd
+        ) > "$OUT/release/$p-uec.tar.gz"
+    cp "$OUT/stage/$arch/$p-disk.img" "$OUT/release/$p-disk.img"
+done
+
+mkdir -p "$OUT/release/buildroot_rootfs"
+for arch in ${ARCHES}; do
+    t="$OUT/release/buildroot_rootfs/buildroot-$VER-$arch.tar"
+    cp "$OUT/build/$arch/rootfs.tar" "$t"
+    gzip --force -9 "$t"
+done
+
+chmod u+rwX,go+rX -R "$OUT/release/"* 
+
+sumfiles=$(cd "$OUT/release" && for f in *; do
+    [ -f "$f" -a "$f" != MD5SUMS ] && echo "$f"; done)
+( cd "$OUT/release" && md5sum $sumfiles > MD5SUMS )
+
+logevent "end populating release" -
+msg "output in $OUT/release"
+
+if [ "true" = "${BOOTTEST}" ]; then
+    for arch in ${ARCHES}; do
+        img="$OUT/release/pooya-$VER-$arch-disk.img"
+        logevent "start test-boot $arch ${img##*/}" -
+        POWEROFF=true IMG="$img" RELEASE_DIR=$OUT/release test-boot
+        logevent "end test-boot $arch ${img##*/}"
+    done
+fi
+
+msg "entire process took $SECONDS seconds"
+logevent "end $mainargs" "$tstart"
+
+# vi: tabstop=4 expandtab

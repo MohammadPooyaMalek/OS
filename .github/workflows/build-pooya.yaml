@@ -1,0 +1,103 @@
+name: Pooya Cloud Image Builder
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+# Add permissions at the workflow level
+permissions:
+  contents: write  # Required for creating releases, tags, and pushing to the repo
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    env:
+      CI_BUILD: "true"
+      CI_BUILD_OUT: "build-ci/"
+      QUIET: 1
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cloud-utils qemu-system openbios-ppc
+          ./bin/system-setup
+
+      - name: Build image
+        run: |
+          # Determine reason (tag name or "daily")
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            REASON="${GITHUB_REF#refs/tags/}"
+          else
+            REASON="daily"
+          fi
+          ./bin/build-release "$REASON"
+
+      - name: Find built image
+        id: find_image
+        run: |
+          IMG_FILE=$(find build-ci/release/ -name "*.img" | head -n 1)
+          echo "img_file=$IMG_FILE" >> "$GITHUB_OUTPUT"
+          echo "img_name=$(basename "$IMG_FILE")" >> "$GITHUB_OUTPUT"
+      
+      - name: Rename image to pooya-latest.img
+        run: |
+          mv "${{ steps.find_image.outputs.img_file }}" build-ci/release/Pooya-latest-x86_64.img
+
+      - name: Set output for renamed image
+        id: renamed_image
+        run: |
+          echo "img_file=build-ci/release/Pooya-latest-x86_64.img" >> "$GITHUB_OUTPUT"
+          echo "img_name=Pooya-latest-x86_64.img" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Release (for tags)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ steps.renamed_image.outputs.img_file }}
+          name: "PooyaOS Release ${{ github.ref_name }}"
+          draft: false
+          prerelease: false
+
+      - name: Upload to Latest Release (for main branch)
+        if: github.ref == 'refs/heads/main'
+        uses: marvinpinto/action-automatic-releases@latest
+        with:
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          automatic_release_tag: "latest-build"
+          prerelease: true
+          title: "Latest Development Build"
+          files: ${{ steps.renamed_image.outputs.img_file }}
+
+      # - name: Update README with download link
+      #   if: github.ref == 'refs/heads/main'
+      #   run: |
+      #     REPO="${GITHUB_REPOSITORY}"
+      #     IMG_NAME="${{ steps.renamed_image.outputs.img_name }}"
+      #     DOWNLOAD_URL="https://github.com/$REPO/releases/download/latest-build/$IMG_NAME"
+
+      #     if [ -f "README.md" ]; then
+      #       if grep -q "## Download" README.md; then
+      #         sed -i '/## Download/,/##/{/## Download/!{/##/!d}}' README.md
+      #         sed -i "/## Download/a \nLatest build: [Download Pooya OS Image]($DOWNLOAD_URL)\n\n[View all releases](https://github.com/$REPO/releases)" README.md
+      #       else
+      #         echo -e "\n## Download\n\nLatest build: [Download Pooya OS Image]($DOWNLOAD_URL)\n\n[View all releases](https://github.com/$REPO/releases)" >> README.md
+      #       fi
+
+      #       git config user.name "GitHub Actions"
+      #       git config user.email "actions@github.com"
+      #       if git diff --quiet README.md; then
+      #         echo "README.md unchanged; nothing to commit."
+      #       else
+      #         git add README.md
+      #         git commit -m "Update download link in README [skip ci]"
+      #         git push origin main
+      #       fi
+      #     fi

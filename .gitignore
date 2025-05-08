@@ -1,0 +1,8 @@
+build*/
+buildroot*/
+buildroot
+ccache
+download/*
+grubd
+output
+src/etc/pooya/version

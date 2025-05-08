@@ -1,0 +1,12 @@
+#!/bin/sh
+
+case "$1" in
+	start)
+		mode=$(pooya-query dsmode 2>/dev/null) || exit 0
+		[ "$mode" = "local" ] || exit 0
+		pooya-per instance pooya-apply-local pooya-apply local;;
+	stop) :;;
+	*) echo "unknown argument ${1}" 1>&2;;
+esac
+
+# vi: ts=4 noexpandtab

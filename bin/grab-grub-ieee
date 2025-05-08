@@ -1,0 +1,98 @@
+#!/bin/bash
+
+GRUB_MKIMAGE=${GRUB_MKIMAGE:-}
+
+source "${0%/*}/common-functions.sh"
+
+burl="https://launchpad.net/ubuntu/+archive/primary/+files/"
+outdir="./download"
+def_arches="ppc64le"
+
+case "$1" in
+    --outdir=*) outdir="${1#*=}"; shift;;
+    --outdir) outdir="$2"; shift 2;;
+esac
+gver="$1"
+shift
+
+if [ $# -eq 0 ]; then
+   set -- ${def_arches}
+fi
+
+[ -d "$outdir" ] || mkdir -p "$outdir" ||
+   fail "failed mkdir $outdir"
+
+[ -n "$gver" ] || fail "must give grub version"
+
+deb2tar() {
+
+    local deb="$1" tar="$2"
+
+    if [ -z "$GRUB_MKIMAGE" ]; then
+        # grub-mkimage is grub2-mkimage on fedora/centos.
+        for n in grub-mkimage grub2-mkimage; do
+            command -v $n >/dev/null 2>&1 && GRUB_MKIMAGE=$n && break
+        done
+        [ -n "$GRUB_MKIMAGE" ] ||
+            fail "No grub-mkimage found. cannnot build efi for $efiarch/$format"
+    fi
+
+    t=$(dirname "$deb")
+    tdir=$(mktemp -d "$t/.XXXXXX") || return
+
+    debug 1 "creating $out in tempdir at $tdir"
+
+    mkdir -p "$tdir/deb"
+    ar x "$deb" --output "$tdir/deb" || fail "failed to unpack $deb"
+    ( cd "$tdir/deb" && tar -xf data.tar.* ) || fail "failed to extract data from $deb"
+
+    gbin="grub"
+    gmod="boot cat configfile echo ext2 halt loadenv minicmd normal part_gpt
+          reboot search search_fs_uuid search_fs_file search_label serial sleep
+          test linux"
+
+    debug 2 "grub-mkimage: creating grub powerpc-ieee1275 image"
+    $GRUB_MKIMAGE --directory "${tdir}/deb/usr/lib/grub/powerpc-ieee1275" \
+        --prefix "(ieee1275/disk,gpt1)/boot/grub" \
+        --output "$tdir/${gbin}" \
+        --format "powerpc-ieee1275" \
+        --compression "none" $gmod
+
+    rm -rf "$tdir/deb"
+    debug 2 "creating grub.tar.gz"
+    tar -C "$tdir/" -czf "$tdir/grub.tar.gz" $gbin &&
+        mv "$tdir/grub.tar.gz" "$tar" || {
+            error "failed creating tarball";
+            rm -Rf "$tdir"
+            return 1;
+        }
+    rm -Rf "$tdir"
+    return 0
+
+}
+
+for arch in "$@"; do
+    case "$arch" in
+        ppc64le)
+            debarch='ppc64el'
+            ;;
+        *)
+            debug 1 "no grub-ieee1275 for $arch"
+            exit 1
+            ;;
+    esac
+
+    # e.g. https://launchpad.net/ubuntu/+archive/primary/+files/grub-ieee1275-bin_2.02~beta2-36ubuntu8_ppc64el.deb
+    deb="grub-ieee1275-bin_${gver}_${debarch}.deb"
+    if [ ! -f "${outdir}/${deb}" ]; then
+            dl $burl/$deb "$outdir/$deb" || fail "failed dl $burl/$deb"
+    fi
+    tar="grub-ieee-${gver}-${arch}.tar.gz"
+    deb2tar "$outdir/$deb" "$outdir/$tar" ||
+        fail "failed deb2tar from $deb to $tar"
+
+    error "wrote $outdir/${tar}"
+    ln -sf "${tar}" "$outdir/grub-ieee-${arch}.tar.gz" ||
+        fail "failed symlink for $outdir/grub-ieee-${arch}.tar.gz"
+done
+# vi: ts=4 expandtab
